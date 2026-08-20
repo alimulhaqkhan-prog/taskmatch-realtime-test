@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TaskMatch Realtime Test</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;margin:0;background:#fffdf8;color:#222}
+.app{max-width:720px;margin:auto;padding:18px}.card{background:#fff;border:1px solid #e8e8e8;border-radius:18px;padding:16px;margin-bottom:14px}
+h1{font-size:24px;margin:6px 0}.sub{color:#777;font-size:13px;margin-bottom:14px}
+label{display:block;font-size:12px;font-weight:700;margin:10px 0 6px}input,select,button{font:inherit}
+input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ddd;border-radius:12px;background:#fff}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}button{border:0;border-radius:12px;padding:12px 14px;font-weight:800}
+button:disabled{opacity:.55}.primary{background:#f4b400}.ghost{background:#eee}
+.status{font-size:13px;color:#666;margin-top:10px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#aaa;margin-right:6px}
+.ok{background:#19a66a}.bad{background:#d84a4a}.wait{background:#e7a51b}
+.messages{height:42vh;min-height:260px;overflow:auto;padding:4px}.msg{max-width:82%;padding:10px 12px;border-radius:15px;margin:8px 0;white-space:pre-wrap}
+.mine{margin-left:auto;background:#fff0b8}.other{margin-right:auto;background:#f1f2f4}.meta{font-size:10px;color:#777;margin-top:4px}
+.composer{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.hidden{display:none}.note{font-size:11px;color:#777;line-height:1.45;margin-top:10px}
+.profileLine{font-size:12px;color:#666;margin-top:8px}@media(max-width:520px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>TaskMatch Realtime Test</h1>
+<div class="sub">Phone A ↔ Supabase ↔ Phone B</div>
+
+<div class="card">
+  <div class="row">
+    <div><label>Test role</label><select id="role"><option value="client">Client</option><option value="worker">Worker</option></select></div>
+    <div><label>Email</label><input id="email" autocomplete="username"></div>
+  </div>
+  <label>Password</label><input id="password" type="password" autocomplete="current-password">
+  <div class="row" style="margin-top:12px"><button class="primary" id="login">Sign in</button><button class="ghost" id="logout">Sign out</button></div>
+  <div class="status"><span id="authDot" class="dot"></span><span id="authText">Not signed in</span></div>
+  <div id="profileLine" class="profileLine hidden"></div>
+</div>
+
+<div class="card hidden" id="taskCard"><b id="taskTitle">Loading…</b><div class="status" id="taskMeta"></div></div>
+
+<div class="card hidden" id="chatCard">
+  <div class="status"><span id="rtDot" class="dot"></span><span id="rtText">Realtime disconnected</span></div>
+  <div id="messages" class="messages"></div>
+
+  <div class="row">
+    <div>
+      <label>Message language</label>
+      <select id="sourceLanguage"><option>Arabic</option><option>Urdu</option><option>Pashto</option><option>English</option><option>Hindi</option><option>Bengali</option><option>Punjabi</option><option>Other</option></select>
+    </div>
+    <div><label>Recipient preference</label><input id="recipientPreference" disabled></div>
+  </div>
+
+  <div class="composer"><input id="message" placeholder="Type a message"><button class="primary" id="send">Send</button></div>
+  <div class="status">Phase 1: realtime only. Qwen translation is not connected yet.</div>
+  <div class="note">Language metadata is no longer hard-coded by Client/Worker role. Choose the actual message language. For Roman Urdu, choose <b>Urdu</b>; script/transliteration is a separate future field.</div>
+</div>
+</div>
+
+<script>
+const SUPABASE_URL='https://ooiigbwczamsrnkzkngu.supabase.co';
+const SUPABASE_KEY='sb_publishable_Pz-dkylOgnWqz3X9Y5P26w_JaKPLHsa';
+const TASK_ID='95dce61a-4cc4-42e8-95e1-c2199c7d1576';
+
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let user=null,currentProfile=null,recipientProfile=null,channel=null,sending=false;
+const $=id=>document.getElementById(id);
+
+function setAuth(state,text){$("authDot").className="dot "+(state==="ok"?"ok":state==="wait"?"wait":"bad");$("authText").textContent=text}
+function setRT(state,text){$("rtDot").className="dot "+(state==="ok"?"ok":state==="wait"?"wait":"bad");$("rtText").textContent=text}
+function roleEmail(){$("email").value=$("role").value==="client"?"alimulhaqkhan+client1@gmail.com":"alimulhaqkhan+worker1@gmail.com"}
+$("role").onchange=roleEmail;roleEmail();
+
+function profileLanguage(p,fallback="Other"){return p&&p.preferred_language?p.preferred_language:fallback}
+function setLanguageSelect(v){const s=$("sourceLanguage"),vals=[...s.options].map(o=>o.value);s.value=vals.includes(v)?v:"Other"}
+
+async function loadProfilesAndParticipant(){
+  const {data:profile,error:profileError}=await sb.from("profiles").select("id,display_name,role,preferred_language,preferred_script").eq("id",user.id).single();
+  if(profileError)throw new Error("Profile load failed: "+profileError.message);
+  currentProfile=profile;
+  if(profile.role&&["client","worker"].includes(profile.role))$("role").value=profile.role;
+
+  $("profileLine").classList.remove("hidden");
+  $("profileLine").textContent=`${profile.display_name||user.email} · ${profile.role||"role not set"} · ${profile.preferred_language||"language not set"}${profile.preferred_script?" / "+profile.preferred_script:""}`;
+  setLanguageSelect(profileLanguage(profile,$("role").value==="client"?"Arabic":"Urdu"));
+
+  const {data:mine,error:mineError}=await sb.from("task_participants").select("user_id,participant_role").eq("task_id",TASK_ID).eq("user_id",user.id).maybeSingle();
+  if(mineError)throw new Error("Participant check failed: "+mineError.message);
+  if(!mine)throw new Error("This signed-in user is not a participant in the test task.");
+
+  const {data:participants,error:participantsError}=await sb.from("task_participants").select("user_id,participant_role").eq("task_id",TASK_ID);
+  if(participantsError)throw new Error("Participants load failed: "+participantsError.message);
+
+  const other=(participants||[]).find(p=>p.user_id!==user.id);
+  recipientProfile=null;
+  if(other){
+    const {data:rp,error:rpError}=await sb.from("profiles").select("id,display_name,role,preferred_language,preferred_script").eq("id",other.user_id).maybeSingle();
+    if(rpError)throw new Error("Recipient profile load failed: "+rpError.message);
+    recipientProfile=rp||null;
+  }
+
+  $("recipientPreference").value=recipientProfile
+    ? `${profileLanguage(recipientProfile)}${recipientProfile.preferred_script?" / "+recipientProfile.preferred_script:""}`
+    : "Not set";
+}
+
+async function loadApp(){
+  try{
+    await loadProfilesAndParticipant();
+    const {data:task,error}=await sb.from("tasks").select("id,title,category,offer_sar,client_language,area_text,status").eq("id",TASK_ID).single();
+    if(error)throw new Error("Task access failed: "+error.message);
+    $("taskTitle").textContent=task.title;
+    $("taskMeta").textContent=`${task.category||""} · ${task.offer_sar||""} SAR · ${task.client_language||""} · ${task.area_text||""} · ${task.status||""}`;
+    $("taskCard").classList.remove("hidden");$("chatCard").classList.remove("hidden");
+    await loadMessages();subscribe();
+  }catch(e){setAuth("bad",e?.message||String(e))}
+}
+
+async function loadMessages(){
+  const {data,error}=await sb.from("messages").select("id,sender_id,original_text,original_language,recipient_language,created_at").eq("task_id",TASK_ID).order("created_at",{ascending:true});
+  if(error){setRT("bad","Load failed: "+error.message);return}
+  $("messages").innerHTML="";(data||[]).forEach(render);$("messages").scrollTop=$("messages").scrollHeight;
+}
+
+function render(m){
+  if($("messages").querySelector(`[data-id="${m.id}"]`))return;
+  const d=document.createElement("div");d.dataset.id=m.id;d.className="msg "+(user&&m.sender_id===user.id?"mine":"other");
+  const t=document.createElement("div");t.textContent=m.original_text;
+  const meta=document.createElement("div");meta.className="meta";
+  const when=m.created_at?new Date(m.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"";
+  const lang=m.original_language?`${m.original_language}${m.recipient_language?" → "+m.recipient_language:""}`:"language metadata unavailable";
+  meta.textContent=[lang,when].filter(Boolean).join(" · ");d.append(t,meta);$("messages").appendChild(d);
+}
+
+function subscribe(){
+  if(channel)sb.removeChannel(channel);
+  setRT("wait","Connecting realtime…");
+  channel=sb.channel("task-"+TASK_ID)
+    .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:"task_id=eq."+TASK_ID},p=>{render(p.new);$("messages").scrollTop=$("messages").scrollHeight})
+    .subscribe(status=>{
+      if(status==="SUBSCRIBED")setRT("ok","Realtime connected");
+      else if(["CHANNEL_ERROR","TIMED_OUT","CLOSED"].includes(status))setRT("bad","Realtime: "+status);
+      else setRT("wait","Realtime: "+status);
+    });
+}
+
+$("login").onclick=async()=>{
+  setAuth("wait","Signing in…");$("login").disabled=true;
+  try{
+    const {data,error}=await sb.auth.signInWithPassword({email:$("email").value.trim(),password:$("password").value});
+    if(error){setAuth("bad",error.message);return}
+    user=data.user;setAuth("ok","Signed in as "+user.email);await loadApp();
+  }catch(e){setAuth("bad","Network error: "+(e?.message||e))}
+  finally{$("login").disabled=false}
+};
+
+$("logout").onclick=async()=>{
+  if(channel){await sb.removeChannel(channel);channel=null}
+  await sb.auth.signOut();user=null;currentProfile=null;recipientProfile=null;
+  $("taskCard").classList.add("hidden");$("chatCard").classList.add("hidden");$("profileLine").classList.add("hidden");
+  $("messages").innerHTML="";$("password").value="";setAuth("bad","Not signed in");setRT("bad","Realtime disconnected");
+};
+
+$("send").onclick=async()=>{
+  const text=$("message").value.trim();if(!text||!user||sending)return;
+  sending=true;$("send").disabled=true;
+  try{
+    const sourceLanguage=$("sourceLanguage").value||profileLanguage(currentProfile,"Other");
+    const targetLanguage=profileLanguage(recipientProfile,"Other");
+    const {error}=await sb.from("messages").insert({task_id:TASK_ID,sender_id:user.id,original_text:text,original_language:sourceLanguage,recipient_language:targetLanguage});
+    if(error){setRT("bad","Send failed: "+error.message);return}
+    $("message").value="";
+  }finally{sending=false;$("send").disabled=false;$("message").focus()}
+};
+
+$("message").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();$("send").click()}});
+
+(async()=>{
+  const {data}=await sb.auth.getSession();
+  if(data?.session?.user){
+    user=data.session.user;$("email").value=user.email||$("email").value;
+    setAuth("ok","Signed in as "+(user.email||"current session"));await loadApp();
+  }
+})();
+</script>
+</body>
+</html>
