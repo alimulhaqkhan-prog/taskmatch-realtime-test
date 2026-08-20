@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TaskMatch Realtime Test</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;margin:0;background:#fffdf8;color:#222}
+.app{max-width:720px;margin:auto;padding:18px}
+.card{background:white;border:1px solid #e8e8e8;border-radius:18px;padding:16px;margin-bottom:14px}
+h1{font-size:24px;margin:6px 0}.sub{color:#777;font-size:13px;margin-bottom:14px}
+label{display:block;font-size:12px;font-weight:700;margin:10px 0 6px}
+input,select,button{font:inherit}
+input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ddd;border-radius:12px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{border:0;border-radius:12px;padding:12px 14px;font-weight:800}
+.primary{background:#f4b400}.ghost{background:#eee}
+.status{font-size:13px;color:#666;margin-top:10px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#aaa;margin-right:6px}
+.ok{background:#19a66a}.bad{background:#d84a4a}
+.messages{height:42vh;min-height:260px;overflow:auto;padding:4px}
+.msg{max-width:82%;padding:10px 12px;border-radius:15px;margin:8px 0;white-space:pre-wrap}
+.mine{margin-left:auto;background:#fff0b8}.other{margin-right:auto;background:#f1f2f4}
+.meta{font-size:10px;color:#777;margin-top:4px}
+.composer{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+.hidden{display:none}
+@media(max-width:520px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>TaskMatch Realtime Test</h1>
+  <div class="sub">Phone A ↔ Supabase ↔ Phone B</div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Role</label>
+        <select id="role">
+          <option value="client">Client</option>
+          <option value="worker">Worker</option>
+        </select>
+      </div>
+      <div>
+        <label>Email</label>
+        <input id="email">
+      </div>
+    </div>
+    <label>Password</label>
+    <input id="password" type="password">
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="login">Sign in</button>
+      <button class="ghost" id="logout">Sign out</button>
+    </div>
+    <div class="status"><span id="authDot" class="dot"></span><span id="authText">Not signed in</span></div>
+  </div>
+
+  <div class="card hidden" id="taskCard">
+    <b id="taskTitle">Loading…</b>
+    <div class="status" id="taskMeta"></div>
+  </div>
+
+  <div class="card hidden" id="chatCard">
+    <div class="status"><span id="rtDot" class="dot"></span><span id="rtText">Realtime disconnected</span></div>
+    <div id="messages" class="messages"></div>
+    <div class="composer">
+      <input id="message" placeholder="Type a message">
+      <button class="primary" id="send">Send</button>
+    </div>
+    <div class="status">Phase 1: realtime only. Qwen translation is not connected yet.</div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://ooiigbwczamsrnkzkkngu.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Pz-dkylOgnWqz3X9Y5P26w_JaKPLHsa";
+const TASK_ID = "95dce61a-4cc4-42e8-95e1-c2199c7d1576";
+const sb = window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let user=null, channel=null;
+const $=id=>document.getElementById(id);
+
+function setAuth(ok,text){$("authDot").className="dot "+(ok?"ok":"bad");$("authText").textContent=text}
+function setRT(ok,text){$("rtDot").className="dot "+(ok?"ok":"bad");$("rtText").textContent=text}
+
+$("role").onchange=()=>{$("email").value=$("role").value==="client"?"alimulhaqkhan+client1@gmail.com":"alimulhaqkhan+worker1@gmail.com"};
+$("role").onchange();
+
+async function loadApp(){
+  const {data:task,error}=await sb.from("tasks").select("id,title,category,offer_sar,client_language,area_text,status").eq("id",TASK_ID).single();
+  if(error){setAuth(false,"Task access failed: "+error.message);return}
+  $("taskTitle").textContent=task.title;
+  $("taskMeta").textContent=`${task.category||""} · ${task.offer_sar||""} SAR · ${task.client_language||""} · ${task.area_text||""} · ${task.status}`;
+  $("taskCard").classList.remove("hidden");$("chatCard").classList.remove("hidden");
+  await loadMessages(); subscribe();
+}
+
+async function loadMessages(){
+  const {data,error}=await sb.from("messages")
+    .select("id,sender_id,original_text,original_language,recipient_language,created_at")
+    .eq("task_id",TASK_ID).order("created_at",{ascending:true});
+  if(error){setRT(false,"Load failed: "+error.message);return}
+  $("messages").innerHTML="";
+  (data||[]).forEach(render);
+  $("messages").scrollTop=$("messages").scrollHeight;
+}
+
+function render(m){
+  if($("messages").querySelector(`[data-id="${m.id}"]`)) return;
+  const d=document.createElement("div"); d.dataset.id=m.id;
+  d.className="msg "+(user&&m.sender_id===user.id?"mine":"other");
+  const t=document.createElement("div"); t.textContent=m.original_text;
+  const meta=document.createElement("div"); meta.className="meta";
+  meta.textContent=`${m.original_language||"?"} → ${m.recipient_language||"?"}`;
+  d.append(t,meta); $("messages").appendChild(d);
+}
+
+function subscribe(){
+  if(channel) sb.removeChannel(channel);
+  channel=sb.channel("task-"+TASK_ID)
+   .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:"task_id=eq."+TASK_ID},p=>{render(p.new);$("messages").scrollTop=$("messages").scrollHeight})
+   .subscribe(s=>{if(s==="SUBSCRIBED")setRT(true,"Realtime connected");else setRT(false,"Realtime: "+s)});
+}
+
+$("login").onclick=async()=>{
+  const {data,error}=await sb.auth.signInWithPassword({email:$("email").value.trim(),password:$("password").value});
+  if(error){setAuth(false,error.message);return}
+  user=data.user; setAuth(true,"Signed in as "+user.email); await loadApp();
+};
+
+$("logout").onclick=async()=>{
+  if(channel){await sb.removeChannel(channel);channel=null}
+  await sb.auth.signOut(); user=null;
+  $("taskCard").classList.add("hidden");$("chatCard").classList.add("hidden");$("messages").innerHTML="";
+  setAuth(false,"Not signed in");setRT(false,"Realtime disconnected");
+};
+
+$("send").onclick=async()=>{
+  const text=$("message").value.trim(); if(!text||!user)return;
+  const isClient=$("role").value==="client";
+  const {error}=await sb.from("messages").insert({
+    task_id:TASK_ID,sender_id:user.id,original_text:text,
+    original_language:isClient?"Arabic":"Urdu",
+    recipient_language:isClient?"Urdu":"Arabic"
+  });
+  if(error){setRT(false,"Send failed: "+error.message);return}
+  $("message").value="";
+};
+
+$("message").addEventListener("keydown",e=>{if(e.key==="Enter")$("send").click()});
+</script>
+</body>
+</html>
